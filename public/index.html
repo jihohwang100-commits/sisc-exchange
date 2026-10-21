@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SISC 글로벌 주식 거래소</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 15px; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; padding-bottom: 10px; margin-bottom: 15px; }
+        h1 { margin: 0; color: #4CAF50; font-size: 20px; }
+        .container { display: flex; flex-direction: column; gap: 15px; }
+        .card { background: #1e1e1e; padding: 15px; border-radius: 8px; }
+        h3 { margin-top: 0; border-bottom: 1px solid #333; padding-bottom: 8px; font-size: 15px; color: #bbb; }
+        input, select, button { width: 100%; padding: 12px; margin: 6px 0; background: #2a2a2a; border: 1px solid #444; color: white; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        button { background: #4CAF50; font-weight: bold; border: none; }
+        button.sell-btn { background: #f44336; }
+        .orderbook-row { display: flex; justify-content: space-between; padding: 4px 0; font-family: monospace; }
+        .ask { color: #f44336; }
+        .bid { color: #4CAF50; }
+        #login-modal { position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); display: flex; justify-content: center; align-items: center; z-index: 1000; }
+        .modal-content { background: #222; padding: 25px; border-radius: 12px; width: 80%; max-width: 300px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="login-modal">
+        <div class="modal-content">
+            <h2>SISC 거래소</h2>
+            <p style="font-size:12px; color:#aaa;">닉네임 입력 (운영자는 <b>admin</b>)</p>
+            <input type="text" id="username-input" placeholder="예: user1 또는 admin">
+            <button onclick="login()">입장하기</button>
+        </div>
+    </div>
+
+    <header>
+        <h1>📈 SISC Exchange</h1>
+        <select id="currency-select" onchange="updateCurrency()" style="width: auto;">
+            <option value="USD">USD ($)</option>
+            <option value="KRW">KRW (₩)</option>
+            <option value="JPY">JPY (¥)</option>
+        </select>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <span id="user-display" style="font-weight: bold; color: #4CAF50;"></span>
+            <p>현금 잔고: <span id="cash-balance" style="font-weight:bold;">0.00</span></p>
+            <p>보유 주식: <span id="share-balance" style="font-weight:bold;">0</span> 주</p>
+        </div>
+
+        <div class="card">
+            <h3>매도 호가</h3>
+            <div id="asks-list"></div>
+            <div id="current-price" style="text-align:center; font-size: 18px; font-weight: bold; margin: 8px 0;">현재가: $2.00</div>
+            <h3>매수 호가</h3>
+            <div id="bids-list"></div>
+        </div>
+
+        <div class="card">
+            <h3>주문하기</h3>
+            <input type="number" id="order-price" step="0.01" value="2.00" placeholder="가격">
+            <input type="number" id="order-qty" value="10" placeholder="수량">
+            <button onclick="placeOrder('BUY')">매수 (BUY)</button>
+            <button class="sell-btn" onclick="placeOrder('SELL')">매도 (SELL)</button>
+        </div>
+
+        <div class="card">
+            <h3>SISC 정보 & 뉴스</h3>
+            <p>매출: <span id="rev-val">-</span> | 순이익: <span id="net-val">-</span></p>
+            <div id="news-list" style="max-height: 120px; overflow-y: auto;"></div>
+            
+            <div id="admin-panel" style="display:none; margin-top: 15px; border-top: 1px solid #444; padding-top: 10px;">
+                <h3 style="color: #ff9800;">⚙️ 어드민 뉴스 작성</h3>
+                <input type="text" id="news-title" placeholder="제목">
+                <input type="text" id="news-content" placeholder="내용">
+                <button onclick="postNews()" style="background:#ff9800;">발행</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let currentUser = null;
+        const rates = { USD: 1, KRW: 1380, JPY: 155 };
+
+        function login() {
+            const id = document.getElementById('username-input').value.trim();
+            if (!id) return alert('ID를 입력하세요!');
+            fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: id })
+            }).then(res => res.json()).then(data => {
+                currentUser = data.user_id;
+                document.getElementById('user-display').innerText = `계정: ${currentUser} (${data.is_admin ? '운영자' : '투자자'})`;
+                document.getElementById('login-modal').style.display = 'none';
+                if (data.is_admin) document.getElementById('admin-panel').style.display = 'block';
+                loadMarket();
+                loadAccount();
+            });
+        }
+
+        function loadAccount() {
+            if (!currentUser) return;
+            fetch(`/api/account/${currentUser}`).then(res => res.json()).then(data => {
+                const currency = document.getElementById('currency-select').value;
+                const rate = rates[currency];
+                document.getElementById('cash-balance').innerText = `${(data.user.usd_balance * rate).toLocaleString()} ${currency}`;
+                document.getElementById('share-balance').innerText = data.portfolio.shares.toLocaleString();
+            });
+        }
+
+        function loadMarket() {
+            fetch('/api/market').then(res => res.json()).then(data => {
+                const currency = document.getElementById('currency-select').value;
+                const rate = rates[currency];
+
+                let asksHtml = '';
+                (data.asks || []).reverse().forEach(ask => { asksHtml += `<div class="orderbook-row ask"><span>$${ask.price.toFixed(2)}</span><span>${ask.qty}주</span></div>`; });
+                document.getElementById('asks-list').innerHTML = asksHtml || '<div>매도 물량 없음</div>';
+
+                let bidsHtml = '';
+                (data.bids || []).forEach(bid => { bidsHtml += `<div class="orderbook-row bid"><span>$${bid.price.toFixed(2)}</span><span>${bid.qty}주</span></div>`; });
+                document.getElementById('bids-list').innerHTML = bidsHtml || '<div>매수 물량 없음</div>';
+
+                if (data.trades && data.trades.length > 0) {
+                    document.getElementById('current-price').innerText = `현재가: ${(data.trades[0].price * rate).toFixed(2)} ${currency}`;
+                }
+                if (data.company) {
+                    document.getElementById('rev-val').innerText = data.company.revenue;
+                    document.getElementById('net-val').innerText = data.company.net_income;
+                }
+                let newsHtml = '';
+                (data.news || []).forEach(n => { newsHtml += `<div style="border-bottom:1px solid #333; padding:5px 0;"><b>${n.title}</b><br>${n.content}</div>`; });
+                document.getElementById('news-list').innerHTML = newsHtml || '뉴스 없음';
+            });
+        }
+
+        function placeOrder(type) {
+            const price = parseFloat(document.getElementById('order-price').value);
+            const quantity = parseInt(document.getElementById('order-qty').value);
+            fetch('/api/order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUser, type, price, quantity })
+            }).then(res => res.json()).then(data => {
+                if (data.error) alert(data.error);
+                else { loadAccount(); loadMarket(); }
+            });
+        }
+
+        function postNews() {
+            const title = document.getElementById('news-title').value;
+            const content = document.getElementById('news-content').value;
+            fetch('/api/admin/news', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUser, title, content })
+            }).then(() => { alert('발행 완료!'); loadMarket(); });
+        }
+
+        function updateCurrency() { loadMarket(); loadAccount(); }
+        socket.on('marketUpdate', () => { loadMarket(); loadAccount(); });
+    </script>
+</body>
+</html>
