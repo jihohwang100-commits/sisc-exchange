@@ -1,0 +1,14 @@
+{
+  "name": "sisc-stock-exchange",
+  "version": "1.0.0",
+  "description": "Global P2P Stock Exchange for SISC",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "sqlite3": "^5.1.7",
+    "socket.io": "^4.7.5"
+  }
+}
